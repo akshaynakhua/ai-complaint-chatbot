@@ -1,0 +1,163 @@
+# backend/registries/Listed_Company_Equity_Issue_DividendTransfer_Transmission_Duplicate_Shares_BonusShares_etc.py
+from typing import Dict, List, Iterable, Tuple, Optional
+import os, csv, glob, io, re, unicodedata
+
+DEBUG = True  # set False in prod
+
+try:
+    from rapidfuzz import fuzz
+    _USE_RF = True
+except Exception:
+    import difflib
+    _USE_RF = False
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+COMPANY_CSV: Optional[str] = None
+
+_COMPANY_NORM: Dict[str, str] = {}
+_COMPANY_LIST: List[str] = []
+_COMPANY_TOKENS: List[Tuple[str, set]] = []
+_ALIAS_TO_FULL: Dict[str, str] = {}
+
+HARD_CUTOFF = 60.0  # permissive for typos
+
+COMPANY_STOP = {
+    "limited","ltd","private","pvt","india","indian","and","&","co","company",
+    "industries","industry","corporation","corp","plc","services","service",
+    "global","international","intl","ventures","holdings","holding","systems",
+    "solutions","technologies","technology","tech","chemicals","steel","bank",
+    "finance","financial","capital","infrastructure","infra","power","energy"
+}
+
+FILENAME_CORE = "Listed_Company_Equity_Issue_DividendTransfer_Transmission_Duplicate_Shares_BonusShares_etc"
+
+def _discover_csv() -> str:
+    lists_dir = os.path.join(BASE_DIR, "Lists")
+
+    # 1) exact preferred filename
+    for p in [
+        os.path.join(lists_dir, f"{FILENAME_CORE}.csv"),
+        os.path.join(lists_dir, f"{FILENAME_CORE}.csv.csv"),
+    ]:
+        if os.path.exists(p):
+            if DEBUG: print("[companies] using:", p)
+            return p
+
+    # 2) glob fallback (in case of slight rename)
+    for pat in [
+        os.path.join(lists_dir, f"{FILENAME_CORE}*.csv*"),
+        os.path.join(lists_dir, "*compa*ies*.csv*"),
+        os.path.join(BASE_DIR, "**", f"{FILENAME_CORE}*.csv*"),
+    ]:
+        for p in glob.glob(pat, recursive=True):
+            if os.path.exists(p):
+                if DEBUG: print("[companies] using via glob:", p)
+                return p
+
+    # 3) last fallback
+    p = os.path.join(lists_dir, f"{FILENAME_CORE}.csv")
+    if DEBUG: print("[companies] defaulting to:", p, "(exists?", os.path.exists(p), ")")
+    return p
+
+def _norm_text(s: str) -> str:
+    s = unicodedata.normalize("NFKC", s or "")
+    s = re.sub(r"[^\w& ]+", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+def _tokenize(s: str, stop: Iterable[str]) -> set:
+    return {w for w in _norm_text(s).split() if w and w not in stop}
+
+def _rf_score(a: str, b: str) -> float:
+    if _USE_RF:
+        return max(fuzz.token_set_ratio(a, b), fuzz.partial_ratio(a, b))
+    else:
+        import difflib
+        return difflib.SequenceMatcher(None, _norm_text(a), _norm_text(b)).ratio() * 100.0
+
+def load_registry() -> int:
+    global COMPANY_CSV, _COMPANY_NORM, _COMPANY_LIST, _COMPANY_TOKENS, _ALIAS_TO_FULL
+    COMPANY_CSV = _discover_csv()
+    _COMPANY_NORM, _COMPANY_LIST, _COMPANY_TOKENS, _ALIAS_TO_FULL = {}, [], [], {}
+
+    if not os.path.exists(COMPANY_CSV):
+        if DEBUG: print("[companies] file not found:", COMPANY_CSV)
+        return 0
+
+    text = open(COMPANY_CSV, "rb").read().decode("utf-8-sig", errors="replace")
+
+    try:
+        delim = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|").delimiter
+    except Exception:
+        delim = ","
+    rows = [r for r in csv.reader(io.StringIO(text), delimiter=delim) if r and any(c.strip() for c in r)]
+    if not rows: return 0
+
+    header = [(h or "").strip().lower() for h in rows[0]]
+    name_idx = alias_idx = None
+    if any(h in {"name","company_name"} for h in header):
+        for i, h in enumerate(header):
+            if h in {"name","company_name"}: name_idx = i
+            if h in {"aliases","alias","aka","shortnames"}: alias_idx = i
+        data_rows = rows[1:]
+        if DEBUG: print("[companies] header detected:", header)
+    else:
+        name_idx = 0
+        data_rows = rows
+        if DEBUG: print("[companies] no header detected; using col 0 as name")
+
+    for r in data_rows:
+        if name_idx >= len(r): continue
+        disp = (r[name_idx] or "").strip()
+        if not disp: continue
+        norm = _norm_text(disp)
+        if norm not in _COMPANY_NORM:
+            _COMPANY_NORM[norm] = disp
+            _COMPANY_LIST.append(disp)
+        if alias_idx is not None and alias_idx < len(r):
+            aliases_raw = (r[alias_idx] or "").strip()
+            if aliases_raw:
+                for a in re.split(r"[,|/;]\s*", aliases_raw):
+                    if a:
+                        _ALIAS_TO_FULL[_norm_text(a)] = disp
+
+    _COMPANY_TOKENS = [(name, _tokenize(name, COMPANY_STOP)) for name in _COMPANY_LIST]
+    if DEBUG: print("[companies] loaded count:", len(_COMPANY_LIST))
+    return len(_COMPANY_LIST)
+
+def resolve_full_name(name: str) -> Optional[str]:
+    n = _norm_text(name)
+    if n in _COMPANY_NORM: return _COMPANY_NORM[n]
+    if n in _ALIAS_TO_FULL: return _ALIAS_TO_FULL[n]
+    return None
+
+def suggest(query: str) -> List[Tuple[str, float]]:
+    qn = (query or "").strip()
+    if not qn: return []
+    full = resolve_full_name(qn)
+    if full: return [(full, 100.0)]
+
+    q_norm = _norm_text(qn)
+    short = len(q_norm) <= 4
+
+    res: List[Tuple[str, float]] = []
+    for disp, _toks in _COMPANY_TOKENS:
+        s = _rf_score(qn, disp)
+        ld = disp.lower()
+        if ld.startswith(q_norm): s += 24
+        elif q_norm in ld: s += 12
+        cutoff = 30.0 if short else HARD_CUTOFF
+        if s >= cutoff: res.append((disp, s))
+    res.sort(key=lambda x: x[1], reverse=True)
+    return res[:8]
+
+def autodetect_in_text(text: str) -> List[str]:
+    t = _norm_text(text or "")
+    hits: List[str] = []
+    for norm, disp in _COMPANY_NORM.items():
+        if norm and norm in t and disp not in hits:
+            hits.append(disp)
+    for alias_norm, disp in _ALIAS_TO_FULL.items():
+        if alias_norm and alias_norm in t and disp not in hits:
+            hits.append(disp)
+    return hits[:5]
