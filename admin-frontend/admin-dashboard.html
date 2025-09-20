@@ -1,1 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Complaint Admin</title>
+  <style>
+    :root{
+      --bg:#f7f8fb; --panel:#fff; --ink:#0f172a; --muted:#6b7280; --line:#e5e7eb;
+      --accent:#0f172a; --accent-ink:#fff; --danger:#ef4444;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+    a{color:inherit}
+    .topbar{background:#0f172a;color:#fff;padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
+    .topbar .title{font-weight:700}
+    .topbar .right{display:flex;gap:12px;align-items:center;font-size:12px}
+    .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .grow{flex:1 1 auto}
+    input[type="text"],select,input[type="file"]{height:34px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+    .btn{height:34px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer}
+    .btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+    .btn.ghost{background:transparent}
+    .btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+    .muted{color:var(--muted)}
+    table{width:100%;border-collapse:collapse}
+    th,td{border-top:1px solid var(--line);padding:10px 8px;text-align:left;vertical-align:top}
+    th{font-size:12px;text-transform:uppercase;color:var(--muted);letter-spacing:.02em}
+    .actions{display:flex;gap:8px}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:var(--muted)}
+    .footer-row{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
+    .link{color:#2563eb;text-decoration:none}
+    .empty{color:var(--muted);padding:16px 8px}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="title">Complaint Admin</div>
+    <div class="right">
+      <div id="apiLabel" class="pill"></div>
+      <button id="logoutBtn" class="btn danger">Logout</button>
+    </div>
+  </div>
 
+  <div class="wrap">
+    <!-- Dataset & Training -->
+    <div class="card">
+      <h3>Dataset & Training</h3>
+      <div class="row">
+        <input type="file" id="fileInput"/>
+        <button id="uploadBtn" class="btn">Upload</button>
+        <button id="trainBtn" class="btn primary">Train</button>
+        <a id="downloadMaster" class="btn" href="#">Download Master</a>
+      </div>
+      <div id="masterInfo" class="muted" style="margin-top:6px">Master: -</div>
+      <div id="uploadsInfo" class="muted">Recent uploads: -</div>
+      <div id="trainStatus" class="muted" style="margin-top:6px"></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card">
+      <div class="row">
+        <input id="q" class="grow" type="text" placeholder="Search description, complaint #, category, name…"/>
+        <select id="sizeSel"><option>20</option><option>50</option><option>100</option></select>
+        <button id="searchBtn" class="btn">Search</button>
+        <button id="clearBtn" class="btn">Clear</button>
+        <div style="flex:1"></div>
+        <button id="csvBtn" class="btn">Export CSV</button>
+        <button id="xlsxBtn" class="btn">Export Excel</button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="card">
+      <div class="row" style="margin-bottom:6px">
+        <div class="muted">Total: <span id="total">0</span></div>
+        <div style="flex:1"></div>
+        <div class="row">
+          <button id="prevBtn" class="btn">Prev</button>
+          <div class="pill">Page <span id="pageLbl">1</span></div>
+          <button id="nextBtn" class="btn">Next</button>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Complaint #</th><th>Category</th><th>Sub-Category</th>
+            <th>Phone</th><th>Email</th><th>Timestamp</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+      </table>
+
+      <div class="footer-row">
+        <div class="muted">Total: <span id="total2">0</span></div>
+        <div class="row">
+          <button id="prevBtn2" class="btn">Prev</button>
+          <div class="pill">Page <span id="pageLbl2">1</span></div>
+          <button id="nextBtn2" class="btn">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API_BASE = localStorage.getItem("ADMIN_API_BASE");
+const TOKEN    = localStorage.getItem("ADMIN_TOKEN");
+if (!API_BASE || !TOKEN) location.replace("login.html");
+document.getElementById("apiLabel").textContent = `API: ${API_BASE}`;
+document.getElementById("logoutBtn").onclick = () => { localStorage.removeItem("ADMIN_TOKEN"); location.replace("login.html"); };
+
+const esc = s => (s==null || s==='')?'-':String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+// === Training ===
+document.getElementById("uploadBtn").onclick = async ()=>{
+  const f = document.getElementById("fileInput").files[0];
+  if(!f){ alert("Pick a file"); return; }
+  const fd = new FormData(); fd.append("file", f);
+  const r = await fetch(API_BASE+"/dataset/upload",{method:"POST",headers:{"Authorization":"Bearer "+TOKEN},body:fd});
+  document.getElementById("uploadsInfo").textContent = r.ok?"Uploaded":"Upload failed";
+};
+document.getElementById("trainBtn").onclick = async ()=>{
+  document.getElementById("trainStatus").textContent = "Training…";
+  const r = await fetch(API_BASE+"/dataset/train",{method:"POST",headers:{"Authorization":"Bearer "+TOKEN}});
+  document.getElementById("trainStatus").textContent = r.ok?"Training started":"Train failed";
+};
+document.getElementById("downloadMaster").href = API_BASE+"/dataset/master?token="+TOKEN;
+
+// === Complaints table ===
+let state={page:1,size:20,q:""};
+const elQ=document.getElementById("q"),elSize=document.getElementById("sizeSel"),elRows=document.getElementById("rows");
+const elTotal=document.getElementById("total"),elTotal2=document.getElementById("total2"),elPage=document.getElementById("pageLbl"),elPage2=document.getElementById("pageLbl2");
+
+async function fetchJSON(u){const r=await fetch(u,{headers:{"Authorization":"Bearer "+TOKEN}});if(r.status==401){location.replace("login.html");return;}if(!r.ok)throw new Error("HTTP"+r.status);return r.json();}
+async function loadPage(){
+  const u=new URL(API_BASE+"/complaints");u.searchParams.set("page",state.page);u.searchParams.set("size",state.size);if(state.q)u.searchParams.set("q",state.q);
+  elRows.innerHTML=`<tr><td colspan="8" class="empty">Loading…</td></tr>`;
+  try{const d=await fetchJSON(u.toString());
+    elTotal.textContent=d.total;elTotal2.textContent=d.total;elPage.textContent=state.page;elPage2.textContent=state.page;
+    if(!d.items||!d.items.length){elRows.innerHTML=`<tr><td colspan="8" class="empty">No complaints found</td></tr>`;return;}
+    elRows.innerHTML=d.items.map(r=>`
+      <tr>
+        <td>${esc(r.id)}</td><td>${esc(r.complaint_number)}</td><td>${esc(r.category)}</td><td>${esc(r.sub_category)}</td>
+        <td>${esc(r.phone)}</td><td>${esc(r.email)}</td><td>${esc(r.timestamp)}</td>
+        <td><a class="link" href="complaint-view.html?id=${encodeURIComponent(r.id)}">Open</a></td>
+      </tr>`).join("");
+  }catch(e){elRows.innerHTML=`<tr><td colspan="8" class="empty" style="color:#ef4444">Failed to fetch</td></tr>`;}
+}
+function prev(){if(state.page>1){state.page--;loadPage();}}
+function next(){state.page++;loadPage();}
+document.getElementById("searchBtn").onclick=()=>{state.q=elQ.value.trim();state.page=1;loadPage();};
+document.getElementById("clearBtn").onclick=()=>{elQ.value="";state.q="";state.page=1;loadPage();};
+elSize.onchange=()=>{state.size=parseInt(elSize.value,10);state.page=1;loadPage();};
+document.getElementById("prevBtn").onclick=prev;document.getElementById("nextBtn").onclick=next;
+document.getElementById("prevBtn2").onclick=prev;document.getElementById("nextBtn2").onclick=next;
+
+async function downloadExport(fmt){
+  const u=new URL(API_BASE+"/complaints/export");u.searchParams.set("format",fmt);if(state.q)u.searchParams.set("q",state.q);
+  const r=await fetch(u.toString(),{headers:{"Authorization":"Bearer "+TOKEN}});
+  if(!r.ok){alert("Export failed");return;}
+  const b=await r.blob();const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=fmt==="xlsx"?"complaints.xlsx":"complaints.csv";a.click();
+}
+document.getElementById("csvBtn").onclick=()=>downloadExport("csv");
+document.getElementById("xlsxBtn").onclick=()=>downloadExport("xlsx");
+
+loadPage();
+</script>
+</body>
+</html>

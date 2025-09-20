@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Complaint View</title>
+<style>
+  :root{--bg:#f8fafc;--card:#fff;--text:#0f172a;--muted:#64748b;--border:#e5e7eb;--brand:#0f172a}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  .nav{background:#0f172a;color:#fff;padding:10px 14px;display:flex;gap:8px;align-items:center}
+  .wrap{max-width:1100px;margin:14px auto;padding:0 10px}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;margin-bottom:12px}
+  .kv{display:grid;grid-template-columns:160px 1fr;gap:6px}
+  pre{white-space:pre-wrap;border:1px solid #e5e7eb;border-radius:10px;padding:10px}
+  .btn{padding:8px 10px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;cursor:pointer}
+  .btn.brand{background:#0f172a;color:#fff;border:none}
+  .muted{color:#64748b}
+  img.preview{max-width:100%;height:auto;border:1px solid #e5e7eb;border-radius:10px}
+  iframe.pdf{width:100%;height:75vh;border:1px solid #e5e7eb;border-radius:10px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  @media print { .nav, .btn { display:none !important; } body { background:#fff; } }
+</style>
+</head>
+<body>
+  <div class="nav">
+    <a class="btn" href="admin-dashboard.html">← Back</a>
+    <button id="printBtn" class="btn brand">Print</button>
+  </div>
+  <div class="wrap">
+    <div class="card">
+      <h2 style="margin:0 0 8px 0">Complaint Detail</h2>
+      <div class="kv" id="meta"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 6px 0">Description</h3>
+      <pre id="desc" class="muted" style="margin:0">Loading…</pre>
+    </div>
+    <div class="card" id="attCard" style="display:none">
+      <div class="row" style="justify-content:space-between">
+        <h3 style="margin:0">Attachment</h3>
+        <div class="row">
+          <button id="dl" class="btn">Download</button>
+          <button id="openNative" class="btn">Open in new tab</button>
+        </div>
+      </div>
+      <div id="att" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+<script>
+/* ---- Config / Auth ---- */
+const API   = localStorage.getItem("ADMIN_API_BASE");
+const TOKEN = localStorage.getItem("ADMIN_TOKEN");
+if(!API || !TOKEN) location.replace("login.html");
+const authHeaders = { "Authorization":"Bearer "+TOKEN };
+const id = new URLSearchParams(location.search).get("id");
+
+/* ---- Utils ---- */
+const fmt = s => s ?? "-";
+const fmtUTC = ts => ts ? new Date(ts).toISOString().replace("T"," ").replace("Z"," UTC") : "-";
+
+/* ---- Print flow: navigate to complaint-print.html and come back ---- */
+document.getElementById('printBtn').onclick = () => {
+  sessionStorage.setItem("returnAfterPrint", location.href); // remember this exact view
+  location.href = `complaint-print.html?id=${encodeURIComponent(id)}`;
+};
+
+/* ---- Networking helpers ---- */
+async function fetchJSON(url, opts){
+  const r = await fetch(url, opts);
+  if (r.status === 401) { location.replace("login.html"); throw new Error("Unauthorized"); }
+  if (!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+async function fetchBlob(url){
+  const r = await fetch(url, { headers: authHeaders });
+  if (r.status === 401) { location.replace("login.html"); return null; }
+  if (!r.ok) throw new Error("HTTP "+r.status);
+  return r.blob();
+}
+
+/* ---- Render complaint ---- */
+async function load(){
+  // complaint data
+  const d = await fetchJSON(`${API}/complaints/${encodeURIComponent(id)}`, { headers: authHeaders });
+
+  document.getElementById('meta').innerHTML = `
+    <div><b>ID</b></div><div>${d.id}  <b>#</b> ${fmt(d.complaint_number)}</div>
+    <div><b>Registered</b></div><div>${fmtUTC(d.timestamp)}</div>
+    <div><b>Category</b></div><div>${fmt(d.category)} / ${fmt(d.sub_category)}</div>
+    <div><b>Name</b></div><div>${fmt(d.full_name)}</div>
+    <div><b>Phone</b></div><div>${fmt(d.phone)}</div>
+    <div><b>Email</b></div><div>${fmt(d.email)}</div>
+    <div><b>PAN</b></div><div>${fmt(d.pan)}</div>
+    <div><b>Address</b></div><div>${fmt(d.address)}</div>
+    <div><b>DOB</b></div><div>${fmt(d.dob)}</div>
+  `;
+  document.getElementById('desc').textContent = d.description || "-";
+
+  // attachment (if present)
+  if (!d.attachment_basename) return;
+
+  document.getElementById('attCard').style.display = "";
+  const baseNoApi = API.replace(/\/api$/,"");
+  const fileUrl = `${baseNoApi}/file/${encodeURIComponent(d.attachment_basename)}`;
+
+  // Download (authorized)
+  document.getElementById('dl').onclick = async () => {
+    try{
+      const blob = await fetchBlob(fileUrl);
+      if (!blob) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = d.attachment_basename;
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }catch(e){ alert("Download failed"); }
+  };
+
+  // Open in new tab (authorized)
+  document.getElementById('openNative').onclick = async () => {
+    try{
+      const blob = await fetchBlob(fileUrl);
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(()=>URL.revokeObjectURL(url), 60_000);
+    }catch(e){ alert("Could not open"); }
+  };
+
+  // Inline preview: PDF in real viewer, images as <img>
+  try{
+    const blob = await fetchBlob(fileUrl);
+    if (!blob) return;
+    const ext = d.attachment_basename.split(".").pop().toLowerCase();
+    const cont = document.getElementById('att'); cont.innerHTML = "";
+
+    if (ext === "pdf"){
+      const url = URL.createObjectURL(blob);
+      const iframe = document.createElement("iframe");
+      iframe.className = "pdf";
+      iframe.type = "application/pdf";
+      iframe.src = url; // browser PDF viewer
+      cont.appendChild(iframe);
+      window.addEventListener('beforeunload', ()=>URL.revokeObjectURL(url));
+    } else if (["png","jpg","jpeg","webp"].includes(ext)){
+      const img = document.createElement("img");
+      img.className = "preview";
+      img.src = URL.createObjectURL(blob);
+      cont.appendChild(img);
+      window.addEventListener('beforeunload', ()=>URL.revokeObjectURL(img.src));
+    } else {
+      cont.innerHTML = `<div class="muted">Preview not supported. Use Download/Open.</div>`;
+    }
+  }catch(e){
+    document.getElementById('att').innerHTML = `<div class="muted">Failed to load attachment.</div>`;
+  }
+}
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Print Complaint</title>
+  <style>
+    body{background:#fff;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;color:#111827}
+    .wrap{max-width:900px;margin:0 auto;padding:12mm}
+    h2{margin:0 0 8px 0}
+    .kv{display:grid;grid-template-columns:160px 1fr;gap:6px 10px;margin:0 0 8px 0}
+    pre{white-space:pre-wrap;border:1px solid #e5e7eb;border-radius:8px;padding:8px}
+    .att{margin:12px 0}
+    .att h3{margin:0 0 4px 0}
+    img,canvas{max-width:100%;height:auto;display:block;margin:0 0 8px 0}
+    @page{size:auto;margin:12mm}
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+  </script>
+</head>
+<body>
+  <div class="wrap" id="root">
+    <h2>Complaint</h2>
+    <div id="meta"></div>
+    <div id="desc"></div>
+    <div id="attachments"></div>
+  </div>
+
+<script>
+const API   = localStorage.getItem("ADMIN_API_BASE");
+const TOKEN = localStorage.getItem("ADMIN_TOKEN");
+if (!API || !TOKEN) location.replace("login.html");
+const auth  = { "Authorization": "Bearer " + TOKEN };
+const id    = new URLSearchParams(location.search).get("id");
+
+// Return target (set by complaint-view before navigation)
+const storedReturn = sessionStorage.getItem("returnAfterPrint");
+const defaultReturn = `complaint-view.html?id=${encodeURIComponent(id)}`;
+const returnUrl = storedReturn || defaultReturn;
+
+// Helpers
+const esc = s => (s==null||s==='')?'-':String(s);
+const fmtIST = ts => ts ? new Date(ts).toLocaleString("en-IN",{timeZone:"Asia/Kolkata"}) : "-";
+async function fetchJSON(url){ const r=await fetch(url,{headers:auth}); if(r.status===401){location.replace("login.html"); return Promise.reject();} if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }
+async function fetchBlob(url){ const r=await fetch(url,{headers:auth}); if(!r.ok) throw new Error("HTTP "+r.status); return r.blob(); }
+
+function metaBlock(d){
+  document.getElementById('meta').innerHTML = `
+    <div class="kv"><div><b>ID</b></div><div>${esc(d.id)} &nbsp;# ${esc(d.complaint_number)}</div></div>
+    <div class="kv"><div><b>Registered</b></div><div>${fmtIST(d.timestamp)}</div></div>
+    <div class="kv"><div><b>Category</b></div><div>${esc(d.category)} / ${esc(d.sub_category)}</div></div>
+    <div class="kv"><div><b>Name</b></div><div>${esc(d.full_name)}</div></div>
+    <div class="kv"><div><b>Phone</b></div><div>${esc(d.phone)}</div></div>
+    <div class="kv"><div><b>Email</b></div><div>${esc(d.email)}</div></div>
+    <div class="kv"><div><b>PAN</b></div><div>${esc(d.pan)}</div></div>
+    <div class="kv"><div><b>Address</b></div><div>${esc(d.address)}</div></div>
+    <div class="kv"><div><b>DOB</b></div><div>${esc(d.dob)}</div></div>
+  `;
+}
+function descBlock(d){ document.getElementById('desc').innerHTML = `<h3>Description</h3><pre>${esc(d.description)}</pre>`; }
+
+async function renderPdf(blob, into){
+  const ab=await blob.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:ab}).promise;
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p);
+    const vp=page.getViewport({scale:1.2});
+    const c=document.createElement('canvas');
+    c.width=vp.width; c.height=vp.height;
+    await page.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+    into.appendChild(c);
+  }
+}
+async function attachmentsBlock(d){
+  if(!d.attachment_basename) return;
+  const sec=document.getElementById('attachments');
+  sec.innerHTML = `<h3>Attachment: ${esc(d.attachment_basename)}</h3>`;
+  const url = API.replace(/\/api$/,"") + "/file/" + encodeURIComponent(d.attachment_basename);
+  try{
+    const blob = await fetchBlob(url);
+    const ext  = d.attachment_basename.split(".").pop().toLowerCase();
+    if (ext === "pdf") {
+      await renderPdf(blob, sec); // canvas pages — included in print
+    } else if (["png","jpg","jpeg","webp"].includes(ext)) {
+      const img=document.createElement("img");
+      img.src = URL.createObjectURL(blob);
+      sec.appendChild(img);
+      window.addEventListener('beforeunload', ()=>URL.revokeObjectURL(img.src));
+    } else {
+      sec.appendChild(Object.assign(document.createElement("div"), {textContent:"(Non-previewable file)"}));
+    }
+  }catch(e){
+    sec.appendChild(Object.assign(document.createElement("div"), {textContent:"(Attachment unavailable)"}));
+  }
+}
+
+/* ---------- Robust return after print ---------- */
+let printedOrDismissed = false;
+function goBack(){
+  if (printedOrDismissed) return;
+  printedOrDismissed = true;
+  // Clean the marker so next print uses a fresh value
+  sessionStorage.removeItem("returnAfterPrint");
+  location.href = returnUrl;
+}
+
+// Some browsers fire this:
+window.addEventListener('afterprint', goBack);
+
+// Others only toggle matchMedia
+const mql = window.matchMedia('print');
+if (mql && typeof mql.addEventListener === 'function') {
+  mql.addEventListener('change', e => { if (!e.matches) goBack(); });
+} else if (mql && typeof mql.addListener === 'function') {
+  mql.addListener(e => { if (!e.matches) goBack(); });
+}
+
+// As a fallback, when tab returns to visible after print dialog:
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && printedOrDismissed) goBack();
+});
+
+// Ultimate fallback timeout (e.g., print dialog blocked or events not firing)
+let safetyTimer;
+
+/* ---------------------------------------------- */
+
+(async function(){
+  try{
+    const d = await fetchJSON(`${API}/complaints/${encodeURIComponent(id)}`);
+    metaBlock(d); descBlock(d); await attachmentsBlock(d);
+
+    // Give layout a frame to render, then trigger print
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+    safetyTimer = setTimeout(goBack, 20000); // 20s safety net
+    window.print();
+
+    // If afterprint doesn’t fire, we still return when dialog closes and page becomes visible
+    // We also set a shorter timer in case 'afterprint' is blocked:
+    setTimeout(()=>{ if(!printedOrDismissed) {/* still on page */} }, 1500);
+  }catch(e){
+    document.getElementById('root').innerHTML = `<div style="color:#b91c1c">Error: ${e.message||e}</div>`;
+    // If rendering failed, still try to go back after short delay
+    setTimeout(goBack, 1500);
+  }
+})();
+</script>
+</body>
+</html>

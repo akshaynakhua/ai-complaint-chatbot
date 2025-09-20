@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin · Datasets & Training</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <style>
+    :root { --bg:#f8fafc; --card:#fff; --text:#0f172a; --muted:#64748b; --border:#e2e8f0; --primary:#0f172a; }
+    *{ box-sizing: border-box; }
+    html,body{ margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--text); background:var(--bg); }
+    .nav{ background:#0b1220; color:#fff; padding:12px 18px; display:flex; justify-content:space-between; align-items:center; }
+    .nav a{ color:#fff; text-decoration:none; margin-right:14px; }
+    .wrap{ max-width:1080px; margin:20px auto; padding:0 12px; }
+    .card{ background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
+    h2{ margin:0 0 12px; }
+    .row{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    input[type="file"]{ padding:8px; border:1px dashed var(--border); background:#fff; border-radius:8px; }
+    button{ background:var(--primary); color:#fff; border:0; border-radius:10px; padding:10px 14px; cursor:pointer; }
+    button.secondary{ background:#fff; color:var(--primary); border:1px solid var(--border); }
+    table{ width:100%; border-collapse: collapse; }
+    th,td{ text-align:left; padding:10px; border-bottom:1px solid var(--border); }
+    code{ background:#0b12200d; padding:2px 6px; border-radius:6px; }
+    .muted{ color:var(--muted); }
+    .ok{ color:#0a7a2f; }
+    .err{ color:#b91c1c; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .pill{ display:inline-block; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:12px; }
+    .flex-between{ display:flex; justify-content:space-between; align-items:center; }
+    .small{ font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <div>
+      <a href="admin-dashboard.html">Dashboard</a>
+      <a href="admin-datasets.html"><b>Datasets & Training</b></a>
+    </div>
+    <div class="small">API: <span id="apiBase"></span> · <a href="login.html" style="color:#fff;">Logout</a></div>
+  </div>
+
+  <div class="wrap">
+    <div class="card">
+      <h2>Upload dataset</h2>
+      <div class="row">
+        <input id="file" type="file" accept=".csv,.xlsx,.xls" />
+        <button onclick="upload()">Upload & Merge</button>
+        <span id="u_msg" class="muted"></span>
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        Required columns (any case/spacing ok): <code>complaint_text</code>, <code>category</code>, <code>sub_category</code>.
+        CSV or Excel supported. Duplicates are removed on the triplet.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h2>Master dataset</h2>
+        <div>
+          <button class="secondary" onclick="downloadMaster()">Download master.csv</button>
+          <button onclick="startTrain()">Start retrain</button>
+        </div>
+      </div>
+      <div id="master_info" class="muted">Loading…</div>
+      <div id="train_status" class="mono small" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Uploaded files</h2>
+      <div id="uploads"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = localStorage.getItem("ADMIN_API_BASE");
+    const TOKEN    = localStorage.getItem("ADMIN_TOKEN");
+    if (!API_BASE || !TOKEN) location.replace("login.html");
+    document.getElementById("apiBase").textContent = API_BASE;
+
+    const auth = { "Authorization": "Bearer " + TOKEN };
+
+    async function jget(url){ const r=await fetch(url,{headers:auth}); if(r.status===401){location.replace("login.html");return;} return r.json(); }
+    async function jpost(url,body){ const r=await fetch(url,{method:"POST",headers:auth,body}); if(r.status===401){location.replace("login.html");return;} return r.json(); }
+
+    async function load(){
+      const data = await jget(`${API_BASE}/datasets`);
+      if(!data || !data.ok){ document.getElementById("master_info").textContent = "Failed to load"; return; }
+
+      const m = data.master || {};
+      document.getElementById("master_info").innerHTML =
+        m.exists ? `Master exists · rows: <b>${m.rows ?? "-"}</b> · <span class="muted">${m.path}</span>` :
+                   `<span class="err">No master yet. Upload a dataset to create it.</span>`;
+
+      const list = data.uploads || [];
+      if(!list.length){ document.getElementById("uploads").innerHTML = `<div class="muted">No uploads yet.</div>`; }
+      else{
+        const rows = list.map(x=>`<tr>
+          <td>${x.basename}</td>
+          <td class="small mono">${(x.size/1024).toFixed(1)} KB</td>
+          <td class="small">${x.uploaded_at}</td>
+        </tr>`).join("");
+        document.getElementById("uploads").innerHTML = `<table>
+          <thead><tr><th>File</th><th>Size</th><th>Uploaded (UTC)</th></tr></thead>
+          <tbody>${rows}</tbody></table>`;
+      }
+      // refresh train status
+      pollStatus();
+    }
+
+    async function upload(){
+      const f = document.getElementById("file").files[0];
+      if(!f){ alert("Choose a CSV/XLSX file"); return; }
+      const fd = new FormData();
+      fd.append("file", f);
+      document.getElementById("u_msg").textContent = "Uploading…";
+      const res = await jpost(`${API_BASE}/datasets/upload`, fd);
+      if(!res || !res.ok){
+        document.getElementById("u_msg").innerHTML = `<span class="err">Failed: ${(res && res.error) || "error"}</span>`;
+      }else{
+        document.getElementById("u_msg").innerHTML =
+          `<span class="ok">Merged: ${res.added_to_master} new rows (upload had ${res.rows_in_upload}). Master total: ${res.master_total}.</span>`;
+        document.getElementById("file").value = "";
+        load();
+      }
+    }
+
+    function downloadMaster(){
+      window.open(`${API_BASE}/datasets/master.csv`, "_blank");
+    }
+
+    async function startTrain(){
+      const res = await jpost(`${API_BASE}/train`, null);
+      if(!res || !res.ok){ alert("Failed to start"); return; }
+      pollStatus(true);
+    }
+
+    let pollTimer = null;
+    async function pollStatus(force){
+      clearTimeout(pollTimer);
+      const r = await jget(`${API_BASE}/train/status`);
+      const s = r && r.ok ? r.status : {state:"idle"};
+      const div = document.getElementById("train_status");
+      div.textContent =
+        `state: ${s.state}\nmessage: ${s.message || ""}\nstarted_at: ${s.started_at || "-"}\nfinished_at: ${s.finished_at || "-"}`;
+      if (s.state === "running" || force){
+        pollTimer = setTimeout(()=>pollStatus(), 1500);
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>
