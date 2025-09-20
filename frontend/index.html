@@ -1,1 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Service Complaint Chatbot</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#e5ddd5; margin:0; }
+    h2 { background:#075E54; color:#fff; padding:15px; margin:0; text-align:center; }
+    #chatbox { height:80vh; overflow-y:auto; padding:10px; background:#e5ddd5; }
+    .user,.bot { max-width:70%; margin:10px; padding:10px; border-radius:10px; display:inline-block; clear:both; white-space:pre-wrap; }
+    .user { background:#dcf8c6; float:right; }
+    .bot  { background:#fff; float:left; }
+    .typing { font-style:italic; color:#888; margin:10px; clear:both; }
+    #input-area { display:flex; padding:10px; align-items:center; background:#f0f0f0; border-top:1px solid #ccc; }
+    #message { flex:1; padding:10px 15px; border-radius:20px; border:1px solid #ccc; margin:0 5px; font-size:16px; }
+    #sendBtn,#micBtn { background:none; border:none; font-size:22px; margin:0 5px; cursor:pointer; }
+    #file-preview { margin:5px 15px; color:#333; }
+    #file-preview button { margin-left:10px; cursor:pointer; }
+    a.attachment { text-decoration:none; }
+  </style>
+</head>
+<body>
+  <h2>Service Complaint Chatbot</h2>
+  <div id="chatbox"></div>
+  <div id="file-preview"></div>
 
+  <div id="input-area">
+    <input
+      type="file"
+      id="fileInput"
+      style="display:none"
+      accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp,.docx"
+    />
+    <button onclick="document.getElementById('fileInput').click()">➕</button>
+    <input type="text" id="message" placeholder="Ask anything..." />
+    <button id="micBtn" onclick="startDictation()">🎤</button>
+    <button id="sendBtn" onclick="sendMessage()">➤</button>
+  </div>
+
+  <script>
+  const API_BASE   = "http://127.0.0.1:5000";
+  const CHAT_URL   = API_BASE + "/chat";
+
+  // persist conversation id across refresh
+  let CID = sessionStorage.getItem("CID") || null;
+
+  const chatbox      = document.getElementById("chatbox");
+  const fileInput    = document.getElementById("fileInput");
+  const messageInput = document.getElementById("message");
+  const filePreview  = document.getElementById("file-preview");
+  let selectedFile   = null;
+
+  fileInput.addEventListener("change", () => {
+    selectedFile = fileInput.files[0] || null;
+    filePreview.innerHTML = selectedFile
+      ? `<div>📎 ${selectedFile.name} <button onclick="removeFile()">❌</button></div>`
+      : "";
+  });
+
+  function removeFile() {
+    fileInput.value = "";
+    selectedFile = null;
+    filePreview.innerHTML = "";
+  }
+
+  function appendMessage(sender, text) {
+    if (!text) return;
+    const div = document.createElement("div");
+    div.className = sender;
+    div.textContent = text;
+    chatbox.appendChild(div);
+    chatbox.scrollTop = chatbox.scrollHeight;
+  }
+
+  function appendLinkBubble(label, url) {
+    if (!url) return;
+    const div = document.createElement("div");
+    div.className = "bot";
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.textContent = label;
+    a.className = "attachment";
+    div.appendChild(a);
+    chatbox.appendChild(div);
+    chatbox.scrollTop = chatbox.scrollHeight;
+  }
+
+  // WhatsApp-like: show a preview *when the user sends a file*
+  function appendUploadedAttachmentPreview(file) {
+    const div = document.createElement("div");
+    div.className = "user";
+    const url = URL.createObjectURL(file);
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.textContent = "📎 " + file.name;
+    a.onclick = () => {
+      // keep the object URL alive briefly
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    };
+    div.appendChild(a);
+    chatbox.appendChild(div);
+    chatbox.scrollTop = chatbox.scrollHeight;
+  }
+
+  function showTyping() {
+    const typing = document.createElement("div");
+    typing.className = "typing";
+    typing.id = "typing";
+    typing.innerText = "Bot is typing...";
+    chatbox.appendChild(typing);
+    chatbox.scrollTop = chatbox.scrollHeight;
+  }
+
+  function removeTyping() {
+    const typing = document.getElementById("typing");
+    if (typing) typing.remove();
+  }
+
+  function absolute(url) {
+    if (!url) return url;
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+    if (url.startsWith("/")) return API_BASE + url;
+    return API_BASE + "/" + url.replace(/^\.?\/*/, "");
+  }
+
+  async function sendMessage() {
+    const text = messageInput.value.trim();
+    if (!text && !selectedFile) return;
+
+    // Show user's content immediately
+    if (text) appendMessage("user", text);
+    if (selectedFile) appendUploadedAttachmentPreview(selectedFile);
+    showTyping();
+
+    try {
+      let res;
+      if (selectedFile) {
+        const form = new FormData();
+        form.append("message", text);
+        form.append("cid", CID || "");
+        form.append("file", selectedFile);
+        res = await fetch(CHAT_URL, { method: "POST", body: form, credentials: "include" });
+      } else {
+        res = await fetch(CHAT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ message: text, cid: CID || "" })
+        });
+      }
+
+      const data = await res.json().catch(async () => { throw new Error(await res.text()); });
+
+      // keep session
+      if (data && data.cid) {
+        CID = data.cid;
+        sessionStorage.setItem("CID", CID);
+      }
+
+      removeTyping();
+
+      const msgs = Array.isArray(data.messages) && data.messages.length
+        ? data.messages
+        : (data.answer ? [data.answer] : (data.response ? [data.response] : []));
+
+      if (!msgs.length) appendMessage("bot", "…(no reply)");
+      else msgs.forEach(m => appendMessage("bot", m));
+
+      // Only show server link mid-flow (prevents “file expired” confusion later)
+      const stage = data.stage;
+      const serverUrl = data.attachment_url || data.file_url;
+      if (serverUrl && stage !== "completed") {
+        appendLinkBubble("📎 View attachment", absolute(serverUrl));
+      }
+
+      messageInput.value = "";
+      removeFile();
+    } catch (err) {
+      console.error(err);
+      removeTyping();
+      appendMessage("bot", "⚠️ " + (err.message || "Failed to fetch"));
+    }
+  }
+
+  function startDictation() {
+    if ('webkitSpeechRecognition' in window) {
+      const rec = new webkitSpeechRecognition();
+      rec.lang = "en-US";
+      rec.onresult = (e) => messageInput.value = e.results[0][0].transcript;
+      rec.start();
+    } else {
+      alert("Speech recognition not supported.");
+    }
+  }
+
+  // Enter to send
+  messageInput.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+
+  // expose for buttons
+  window.sendMessage = sendMessage;
+  window.startDictation = startDictation;
+  window.removeFile = removeFile;
+  </script>
+</body>
+</html>
